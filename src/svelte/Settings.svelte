@@ -11,6 +11,7 @@
   import DeviceSyncCard from './components/DeviceSyncCard.svelte';
   import ScanPairingCode from './components/ScanPairingCode.svelte';
   import MailtoSettings from './components/MailtoSettings.svelte';
+  import GlobalShortcutSettings from './components/GlobalShortcutSettings.svelte';
   import FiltersSettings from './components/FiltersSettings.svelte';
   import SignatureEditor from './components/SignatureEditor.svelte';
   import RecipientKeysCard from './components/RecipientKeysCard.svelte';
@@ -50,6 +51,11 @@
   import { readTrustedImageSenders, untrustImageSender } from '../utils/remote-image-trust';
   import { generatePgpKeyPair, MIN_PASSPHRASE_LENGTH } from '../utils/pgp-keygen';
   import { saveRecipientKey } from '../utils/pgp-recipients';
+  import {
+    setSystemGpgEnabled,
+    systemGpgAvailable,
+    systemGpgEnabled,
+  } from '../utils/pgp-system-gpg';
   import { downloadFile } from '../utils/download';
   import MessageSquare from '@lucide/svelte/icons/message-square';
   import AlertCircle from '@lucide/svelte/icons/alert-circle';
@@ -240,6 +246,9 @@
   let rebuildingIndex = $state(false);
   let rebuildConfirmVisible = $state(false);
   let pgpKeys = $state<{ name: string; value: string }[]>([]);
+  // Desktop app: decrypt with a YubiKey / smartcard through the system gpg.
+  let gpgAvailable = $state(false);
+  let useSystemGpg = $state(false);
   let pairingScannerOpen = $state(false);
   let keyFormVisible = $state(false);
   // The account the open key form (add, edit or create) is for
@@ -875,6 +884,8 @@
     // settings fetch. Until then the card said "No keys added yet", and
     // "Clear saved data" skipped its confirmation as if there were none.
     pgpKeys = readStoredPgpKeys(getAccountId());
+    useSystemGpg = systemGpgEnabled(getAccountId());
+    void systemGpgAvailable().then((ok) => (gpgAvailable = ok));
     await fetchSettings();
     if (generation !== loadGeneration) return;
     const currentAcct = getAccountId();
@@ -913,6 +924,7 @@
     debugPerfEnabled = Local.get('debug_perf') === '1';
 
     pgpKeys = readStoredPgpKeys(currentAcct);
+    useSystemGpg = systemGpgEnabled(currentAcct);
     blockRemoteImages = Boolean(
       getEffectiveSettingValue('block_remote_images', { account: currentAcct }),
     );
@@ -1520,6 +1532,16 @@
     } catch (err) {
       showMutationError(err, 'Failed to save composer default');
     }
+  };
+
+  const saveUseSystemGpg = () => {
+    setSystemGpgEnabled(getAccountId(), useSystemGpg);
+    // As when keys are removed: what the token decrypted is not kept
+    if (!useSystemGpg) void forgetDecryptedMessages(getAccountId());
+    toasts?.show?.(
+      useSystemGpg ? 'YubiKey / smartcard decryption on' : 'YubiKey / smartcard decryption off',
+      'success',
+    );
   };
 
   const saveAttachmentReminder = async () => {
@@ -2995,6 +3017,17 @@
                 </div>
               {/each}
             </div>
+            {#if isTauriDesktop && gpgAvailable}
+              <label class="flex items-center gap-3" data-testid="pgp-use-system-gpg">
+                <Checkbox bind:checked={useSystemGpg} onCheckedChange={saveUseSystemGpg} />
+                <span>Use a YubiKey or smartcard (GnuPG)</span>
+              </label>
+              <p class="text-sm text-muted-foreground">
+                Decrypt with the key on your YubiKey or another OpenPGP card through GnuPG on this
+                computer, instead of adding a private key here. You will be asked for the card's PIN
+                when needed; it is not saved.
+              </p>
+            {/if}
             {#if genFormVisible}
               <div class="space-y-3 border border-border p-4" data-testid="pgp-generate-form">
                 <p class="text-sm">
@@ -3831,6 +3864,9 @@
       {/if}
 
       {#if section === 'shortcuts'}
+        {#if isTauriDesktop}
+          <GlobalShortcutSettings onToast={(message, type) => toasts?.show?.(message, type)} />
+        {/if}
         <Card.Root class="hidden md:block">
           <Card.Header class="flex flex-row items-start justify-between gap-4">
             <div>
